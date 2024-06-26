@@ -2432,3 +2432,4 @@ class HookedTransformer(HookedRootModule):
                 padding_side=padding_side,
                 truncate=True,
             )
+

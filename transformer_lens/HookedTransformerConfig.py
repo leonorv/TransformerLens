@@ -17,7 +17,7 @@ import torch
 
 from transformer_lens import utils
 
-SUPPORTED_ACTIVATIONS = ["relu", "gelu", "silu", "gelu_new", "solu_ln", "gelu_fast"]
+SUPPORTED_ACTIVATIONS = ["relu", "gelu", "silu", "gelu_new", "solu_ln", "gelu_fast", "swiglu"]
 
 
 @dataclass

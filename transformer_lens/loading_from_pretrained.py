@@ -20,6 +20,9 @@ from transformers import (
     T5ForConditionalGeneration,
 )
 
+from hf_olmo import OLMoForCausalLM
+
+
 import transformer_lens.utils as utils
 from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
 
@@ -193,6 +196,7 @@ OFFICIAL_MODEL_NAMES = [
     "google-t5/t5-base",
     "google-t5/t5-large",
     "ai-forever/mGPT",
+    "allenai/OLMo-7b"
 ]
 """Official model names for models on HuggingFace."""
 
@@ -611,6 +615,7 @@ MODEL_ALIASES = {
     "google-t5/t5-base": ["t5-base"],
     "google-t5/t5-large": ["t5-large"],
     "ai-forever/mGPT": ["mGPT"],
+    "allenai/OLMo-7b": ["olmo-7b"]
 }
 """Model aliases for models on HuggingFace."""
 
@@ -682,6 +687,8 @@ def convert_hf_model_config(model_name: str, **kwargs):
         architecture = "LlamaForCausalLM"
     elif "gemma" in official_model_name.lower():
         architecture = "GemmaForCausalLM"
+    elif "olmo" in official_model_name.lower():
+        architecture = "OLMoForCausalLM"
     else:
         huggingface_token = os.environ.get("HF_TOKEN", None)
         hf_config = AutoConfig.from_pretrained(
@@ -1204,6 +1211,17 @@ def convert_hf_model_config(model_name: str, **kwargs):
             "use_attn_scale": False,
             "tie_word_embeddings": hf_config.tie_word_embeddings,
         }
+    elif official_model_name.startswith("allenai/OLMo-7b"):
+        cfg_dict = {
+            "d_model": 4096,
+            "n_heads": 32,
+            "n_layers": 32,
+            "act_fn": "swiglu",
+            "d_vocab": 50280,
+            "n_ctx": 2048,
+            "d_head": 128,
+            "normalization_type": "LN",
+    }
     else:
         raise NotImplementedError(f"{architecture} is not currently supported.")
     # All of these models use LayerNorm
@@ -1587,6 +1605,8 @@ def get_pretrained_state_dict(
             state_dict = convert_phi3_weights(hf_model, cfg)
         elif cfg.original_architecture == "GemmaForCausalLM":
             state_dict = convert_gemma_weights(hf_model, cfg)
+        elif cfg.original_architecture == "OLMoForCausalLM":
+            state_dict = convert_olmo_weights(hf_model, cfg)
         else:
             raise ValueError(
                 f"Loading weights from the architecture is not currently supported: {cfg.original_architecture}, generated from model name {cfg.model_name}. Feel free to open an issue on GitHub to request this feature."
@@ -2893,6 +2913,51 @@ def convert_gemma_weights(gemma, cfg: HookedTransformerConfig):
 
     return state_dict
 
+def convert_olmo_weights(olmo, cfg: HookedTransformerConfig):
+    state_dict = {}
+
+    state_dict["embed.W_E"] = olmo.model.transformer.wte.weight
+    #state_dict["pos_embed.W_pos"] = olmo.model.transformer.wpe.weight
+
+    for l in range(cfg.n_layers):
+        state_dict[f"blocks.{l}.ln1.w"] = olmo.model.transformer.h[l].ln_1.weight
+        state_dict[f"blocks.{l}.ln1.b"] = olmo.model.transformer.h[l].ln_1.bias
+
+        W_Q = olmo.model.transformer.h[l].attn.q_proj.weight
+        W_K = olmo.model.transformer.h[l].attn.k_proj.weight
+        W_V = olmo.model.transformer.h[l].attn.v_proj.weight
+        W_Q = einops.rearrange(W_Q, "(i h) m->i m h", i=cfg.n_heads)
+        W_K = einops.rearrange(W_K, "(i h) m->i m h", i=cfg.n_heads)
+        W_V = einops.rearrange(W_V, "(i h) m->i m h", i=cfg.n_heads)
+        state_dict[f"blocks.{l}.attn.W_Q"] = W_Q
+        state_dict[f"blocks.{l}.attn.W_K"] = W_K
+        state_dict[f"blocks.{l}.attn.W_V"] = W_V
+
+        state_dict[f"blocks.{l}.attn.b_Q"] = torch.zeros(cfg.n_heads, cfg.d_head, dtype=cfg.dtype)
+        state_dict[f"blocks.{l}.attn.b_K"] = torch.zeros(cfg.n_heads, cfg.d_head, dtype=cfg.dtype)
+        state_dict[f"blocks.{l}.attn.b_V"] = torch.zeros(cfg.n_heads, cfg.d_head, dtype=cfg.dtype)
+
+        W_O = olmo.model.transformer.h[l].attn.out_proj.weight
+        W_O = einops.rearrange(W_O, "m (i h)->i h m", i=cfg.n_heads)
+        state_dict[f"blocks.{l}.attn.W_O"] = W_O
+        state_dict[f"blocks.{l}.attn.b_O"] = olmo.model.transformer.h[l].attn.out_proj.bias
+
+        state_dict[f"blocks.{l}.ln2.w"] = olmo.model.transformer.h[l].ln_2.weight
+        state_dict[f"blocks.{l}.ln2.b"] = olmo.model.transformer.h[l].ln_2.bias
+
+        state_dict[f"blocks.{l}.mlp.W_in"] = olmo.model.transformer.h[l].mlp.fc_in.weight.T
+        state_dict[f"blocks.{l}.mlp.b_in"] = olmo.model.transformer.h[l].mlp.fc_in.bias
+
+        state_dict[f"blocks.{l}.mlp.W_out"] = olmo.model.transformer.h[l].mlp.fc_out.weight.T
+        state_dict[f"blocks.{l}.mlp.b_out"] = olmo.model.transformer.h[l].mlp.fc_out.bias
+    state_dict["ln_final.w"] = olmo.model.transformer.ln_f.weight
+    state_dict["ln_final.b"] = olmo.model.transformer.ln_f.bias
+
+    state_dict["unembed.W_U"] = olmo.model.lm_head.weight.T
+    state_dict["unembed.b_U"] = torch.zeros(cfg.d_vocab, dtype=cfg.dtype)
+    return state_dict
+
+
 
 @dataclasses.dataclass
 class Config:
@@ -2929,3 +2994,4 @@ def get_basic_config(model_name: str, **kwargs) -> Config:
             ]
         }
     )
+
