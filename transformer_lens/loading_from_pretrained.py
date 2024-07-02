@@ -21,10 +21,12 @@ from transformers import (
 )
 
 from hf_olmo import OLMoForCausalLM
+from transformer_lens import ActivationCache, HookedTransformer
 
 
 import transformer_lens.utils as utils
 from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
+
 
 OFFICIAL_MODEL_NAMES = [
     "gpt2",
@@ -196,7 +198,8 @@ OFFICIAL_MODEL_NAMES = [
     "google-t5/t5-base",
     "google-t5/t5-large",
     "ai-forever/mGPT",
-    "allenai/OLMo-7b"
+    "allenai/OLMo-1B-hf",
+    "allenai/OLMo-7B-hf",
 ]
 """Official model names for models on HuggingFace."""
 
@@ -615,7 +618,7 @@ MODEL_ALIASES = {
     "google-t5/t5-base": ["t5-base"],
     "google-t5/t5-large": ["t5-large"],
     "ai-forever/mGPT": ["mGPT"],
-    "allenai/OLMo-7b": ["olmo-7b"]
+    "allenai/OLMo-7B-hf": ["olmo-7b-hf"]
 }
 """Model aliases for models on HuggingFace."""
 
@@ -687,8 +690,8 @@ def convert_hf_model_config(model_name: str, **kwargs):
         architecture = "LlamaForCausalLM"
     elif "gemma" in official_model_name.lower():
         architecture = "GemmaForCausalLM"
-    elif "olmo" in official_model_name.lower():
-        architecture = "OLMoForCausalLM"
+    #elif "olmo" in official_model_name.lower():
+    #    architecture = "OLMoForCausalLM"
     else:
         huggingface_token = os.environ.get("HF_TOKEN", None)
         hf_config = AutoConfig.from_pretrained(
@@ -1211,16 +1214,22 @@ def convert_hf_model_config(model_name: str, **kwargs):
             "use_attn_scale": False,
             "tie_word_embeddings": hf_config.tie_word_embeddings,
         }
-    elif official_model_name.startswith("allenai/OLMo-7b"):
+    elif architecture == "OlmoForCausalLM":
         cfg_dict = {
-            "d_model": 4096,
-            "n_heads": 32,
-            "n_layers": 32,
-            "act_fn": "swiglu",
-            "d_vocab": 50280,
-            "n_ctx": 2048,
-            "d_head": 128,
-            "normalization_type": "LN",
+            "d_model": hf_config.hidden_size,
+            "d_head": hf_config.hidden_size // hf_config.num_hidden_layers,
+            "n_heads": hf_config.num_attention_heads,
+            "n_layers": hf_config.num_hidden_layers,
+            "act_fn": hf_config.hidden_act,
+            "d_vocab": hf_config.vocab_size,
+            "n_ctx": hf_config.hidden_size,
+            "eps": 1e-5,
+            "positional_embedding_type": "rotary",
+            "rotary_dim": hf_config.hidden_size //  hf_config.num_attention_heads,
+            "d_mlp": hf_config.intermediate_size,
+            "gated_mlp": True,
+            "tie_word_embeddings": hf_config.tie_word_embeddings
+            #'normalization_type': "LN"
     }
     else:
         raise NotImplementedError(f"{architecture} is not currently supported.")
@@ -1424,6 +1433,8 @@ PYTHIA_CHECKPOINTS = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512] + list(
 # Pythia V1 has log-spaced early checkpoints (see line above), but V0 doesn't
 PYTHIA_V0_CHECKPOINTS = list(range(1000, 143000 + 1, 1000))
 
+OLMO_CHECKPOINTS_1B = list(range(1000, 738000+1, 1000)) 
+OLMO_CHECKPOINTS_7B = [5000] + list(range(40000, 558000+1, 1000))
 
 def get_checkpoint_labels(model_name: str, **kwargs):
     """Returns the checkpoint labels for a given model, and the label_type
@@ -1455,6 +1466,13 @@ def get_checkpoint_labels(model_name: str, **kwargs):
         else:
             label_type = "step"
         return labels, label_type
+    
+    elif official_model_name == "allenai/OLMo-1B-hf":
+        return OLMO_CHECKPOINTS_1B, "step"
+    elif official_model_name == "allenai/OLMo-7B-hf":
+        return OLMO_CHECKPOINTS_7B, "step"
+        
+    
     else:
         raise ValueError(f"Model {official_model_name} is not checkpointed.")
 
@@ -1538,6 +1556,14 @@ def get_pretrained_state_dict(
                     token=huggingface_token,
                     **kwargs,
                 )
+            elif official_model_name.startswith("allenai/OLMo"):
+                hf_model = OLMoForCausalLM.from_pretrained(
+                    official_model_name,
+                    revision=f"step{cfg.checkpoint_value}-tokens4B",
+                    torch_dtype=dtype,
+                    token=huggingface_token,
+                    **kwargs,
+                )
             else:
                 raise ValueError(f"Checkpoints for model {official_model_name} are not supported")
         elif hf_model is None:
@@ -1558,6 +1584,14 @@ def get_pretrained_state_dict(
                     token=huggingface_token,
                     **kwargs,
                 )
+            #elif "olmo" in official_model_name.lower():
+            #    hf_model = AutoModelForCausalLM.from_pretrained(
+            #        official_model_name,
+            #        torch_dtype=dtype,
+            #        token=huggingface_token,
+            #        **kwargs,
+            #    )
+                #hf_model.config.bos_token_id = 50279
             else:
                 hf_model = AutoModelForCausalLM.from_pretrained(
                     official_model_name,
@@ -1565,6 +1599,7 @@ def get_pretrained_state_dict(
                     token=huggingface_token,
                     **kwargs,
                 )
+                
 
             # Load model weights, and fold in layer norm weights
 
@@ -1605,7 +1640,7 @@ def get_pretrained_state_dict(
             state_dict = convert_phi3_weights(hf_model, cfg)
         elif cfg.original_architecture == "GemmaForCausalLM":
             state_dict = convert_gemma_weights(hf_model, cfg)
-        elif cfg.original_architecture == "OLMoForCausalLM":
+        elif cfg.original_architecture == "OlmoForCausalLM":
             state_dict = convert_olmo_weights(hf_model, cfg)
         else:
             raise ValueError(
@@ -2915,46 +2950,73 @@ def convert_gemma_weights(gemma, cfg: HookedTransformerConfig):
 
 def convert_olmo_weights(olmo, cfg: HookedTransformerConfig):
     state_dict = {}
-
-    state_dict["embed.W_E"] = olmo.model.transformer.wte.weight
-    #state_dict["pos_embed.W_pos"] = olmo.model.transformer.wpe.weight
-
+    
+    logging.debug(f"Official model name found: {olmo}")
+    
+    state_dict["embed.W_E"] = olmo.model.embed_tokens.weight
+   
     for l in range(cfg.n_layers):
-        state_dict[f"blocks.{l}.ln1.w"] = olmo.model.transformer.h[l].ln_1.weight
-        state_dict[f"blocks.{l}.ln1.b"] = olmo.model.transformer.h[l].ln_1.bias
+        W_Q = olmo.model.layers[l].self_attn.q_proj.weight
+        W_K = olmo.model.layers[l].self_attn.k_proj.weight
+        W_V = olmo.model.layers[l].self_attn.v_proj.weight
 
-        W_Q = olmo.model.transformer.h[l].attn.q_proj.weight
-        W_K = olmo.model.transformer.h[l].attn.k_proj.weight
-        W_V = olmo.model.transformer.h[l].attn.v_proj.weight
-        W_Q = einops.rearrange(W_Q, "(i h) m->i m h", i=cfg.n_heads)
-        W_K = einops.rearrange(W_K, "(i h) m->i m h", i=cfg.n_heads)
-        W_V = einops.rearrange(W_V, "(i h) m->i m h", i=cfg.n_heads)
+        # in case of quantization,
+        # parameters should stay as bitsandbytes.nn.modules.Params4bit
+        if not cfg.load_in_4bit:
+            W_Q = einops.rearrange(W_Q, "(n h) m->n m h", n=cfg.n_heads)
+            W_K = einops.rearrange(W_K, "(n h) m->n m h", n=cfg.n_heads)
+            W_V = einops.rearrange(W_V, "(n h) m->n m h", n=cfg.n_heads)
+
         state_dict[f"blocks.{l}.attn.W_Q"] = W_Q
         state_dict[f"blocks.{l}.attn.W_K"] = W_K
         state_dict[f"blocks.{l}.attn.W_V"] = W_V
 
-        state_dict[f"blocks.{l}.attn.b_Q"] = torch.zeros(cfg.n_heads, cfg.d_head, dtype=cfg.dtype)
-        state_dict[f"blocks.{l}.attn.b_K"] = torch.zeros(cfg.n_heads, cfg.d_head, dtype=cfg.dtype)
-        state_dict[f"blocks.{l}.attn.b_V"] = torch.zeros(cfg.n_heads, cfg.d_head, dtype=cfg.dtype)
+        state_dict[f"blocks.{l}.attn.b_Q"] = torch.zeros(
+            cfg.n_heads, cfg.d_head, dtype=cfg.dtype, device=cfg.device
+        )
+        state_dict[f"blocks.{l}.attn.b_K"] = torch.zeros(
+            cfg.n_heads,
+            cfg.d_head,
+            dtype=cfg.dtype,
+            device=cfg.device,
+        )
+        state_dict[f"blocks.{l}.attn.b_V"] = torch.zeros(
+            cfg.n_heads,
+            cfg.d_head,
+            dtype=cfg.dtype,
+            device=cfg.device,
+        )
 
-        W_O = olmo.model.transformer.h[l].attn.out_proj.weight
-        W_O = einops.rearrange(W_O, "m (i h)->i h m", i=cfg.n_heads)
-        state_dict[f"blocks.{l}.attn.W_O"] = W_O
-        state_dict[f"blocks.{l}.attn.b_O"] = olmo.model.transformer.h[l].attn.out_proj.bias
+        W_O = olmo.model.layers[l].self_attn.o_proj.weight
 
-        state_dict[f"blocks.{l}.ln2.w"] = olmo.model.transformer.h[l].ln_2.weight
-        state_dict[f"blocks.{l}.ln2.b"] = olmo.model.transformer.h[l].ln_2.bias
+        if not cfg.load_in_4bit:
+            W_O = einops.rearrange(W_O, "m (n h)->n h m", n=cfg.n_heads)
 
-        state_dict[f"blocks.{l}.mlp.W_in"] = olmo.model.transformer.h[l].mlp.fc_in.weight.T
-        state_dict[f"blocks.{l}.mlp.b_in"] = olmo.model.transformer.h[l].mlp.fc_in.bias
+        state_dict[f"blocks.{l}.attn.W_O"] = W_O.to(device=cfg.device)
 
-        state_dict[f"blocks.{l}.mlp.W_out"] = olmo.model.transformer.h[l].mlp.fc_out.weight.T
-        state_dict[f"blocks.{l}.mlp.b_out"] = olmo.model.transformer.h[l].mlp.fc_out.bias
-    state_dict["ln_final.w"] = olmo.model.transformer.ln_f.weight
-    state_dict["ln_final.b"] = olmo.model.transformer.ln_f.bias
+        state_dict[f"blocks.{l}.attn.b_O"] = torch.zeros(
+            cfg.d_model, dtype=cfg.dtype, device=cfg.device
+        )
 
-    state_dict["unembed.W_U"] = olmo.model.lm_head.weight.T
-    state_dict["unembed.b_U"] = torch.zeros(cfg.d_vocab, dtype=cfg.dtype)
+        if not cfg.load_in_4bit:
+            state_dict[f"blocks.{l}.mlp.W_in"] = olmo.model.layers[l].mlp.up_proj.weight.T
+            state_dict[f"blocks.{l}.mlp.W_gate"] = olmo.model.layers[l].mlp.gate_proj.weight.T
+            state_dict[f"blocks.{l}.mlp.W_out"] = olmo.model.layers[l].mlp.down_proj.weight.T
+        else:
+            state_dict[f"blocks.{l}.mlp.W_in"] = olmo.model.layers[l].mlp.up_proj.weight
+            state_dict[f"blocks.{l}.mlp.W_gate"] = olmo.model.layers[l].mlp.gate_proj.weight
+            state_dict[f"blocks.{l}.mlp.W_out"] = olmo.model.layers[l].mlp.down_proj.weight
+
+        state_dict[f"blocks.{l}.mlp.b_in"] = torch.zeros(
+            cfg.d_mlp, dtype=cfg.dtype, device=cfg.device
+        )
+        state_dict[f"blocks.{l}.mlp.b_out"] = torch.zeros(
+            cfg.d_model, dtype=cfg.dtype, device=cfg.device
+        )
+
+    state_dict["unembed.W_U"] = olmo.lm_head.weight.T
+    state_dict["unembed.b_U"] = torch.zeros(cfg.d_vocab, dtype=cfg.dtype, device=cfg.device)
+
     return state_dict
 
 
@@ -2995,3 +3057,26 @@ def get_basic_config(model_name: str, **kwargs) -> Config:
         }
     )
 
+
+
+if __name__=="__main__":
+    
+    #device: torch.device = utils.get_device()
+
+    #model_name = "allenai/OLMo-1B-hf" #"meta-llama/Llama-2-7b-hf"  #"EleutherAI/pythia-14m"  # "facebook/opt-1.3b"
+    
+    #model = HookedTransformer.from_pretrained_no_processing(
+    #model_name,
+    #dtype=torch.bfloat16,
+    #center_unembed=True,
+    #center_writing_weights=True,
+    #fold_ln=True,
+    #device = device,
+    #trust_remote_code=True,
+    #cache_dir = "/mounts/data/proj/hypersum"
+    #checkpoint_value = 5000
+    #refactor_factored_attn_matrices=True,
+    #)
+    
+    #model.generate("Angela Merkel is the capital of", max_new_tokens=1, temperature=0)
+    #print("test")
