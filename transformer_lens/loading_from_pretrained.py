@@ -199,7 +199,7 @@ OFFICIAL_MODEL_NAMES = [
     "google-t5/t5-large",
     "ai-forever/mGPT",
     "allenai/OLMo-1B-hf",
-    "allenai/OLMo-7B-hf",
+    "allenai/OLMo-1.7-7B-hf",
 ]
 """Official model names for models on HuggingFace."""
 
@@ -618,7 +618,7 @@ MODEL_ALIASES = {
     "google-t5/t5-base": ["t5-base"],
     "google-t5/t5-large": ["t5-large"],
     "ai-forever/mGPT": ["mGPT"],
-    "allenai/OLMo-7B-hf": ["olmo-7b-hf"]
+    "allenai/OLMo-1.7-7B-hf": ["olmo-7b-hf"]
 }
 """Model aliases for models on HuggingFace."""
 
@@ -1215,6 +1215,8 @@ def convert_hf_model_config(model_name: str, **kwargs):
             "tie_word_embeddings": hf_config.tie_word_embeddings,
         }
     elif architecture == "OlmoForCausalLM":
+        if official_model_name == "allenai/OLMo-1.7-7B-hf":
+            hf_config.hidden_size = 4096
         cfg_dict = {
             "d_model": hf_config.hidden_size,
             "d_head": hf_config.hidden_size // hf_config.num_hidden_layers,
@@ -1415,6 +1417,37 @@ def get_num_params_of_pretrained(model_name):
     cfg = get_pretrained_model_config(model_name)
     return cfg.n_params
 
+# Function to extract the first number from the name
+def extract_first_number(revision):
+    try:
+        name = revision.name
+        # Extract the number after 'step'
+        number_str = name.split('step')[1].split('-')[0]
+        return int(number_str)
+    except (IndexError, ValueError):
+        # Return a large number to place any non-matching names at the end
+        return float('inf')
+
+def get_revisions(model_name):
+    api = HfApi()
+    repo_refs = api.list_repo_refs(model_name)
+    revisions_final = []
+
+    # Extract tags and branches
+    tags = repo_refs.tags
+    branches = repo_refs.branches
+
+    # Combine the revisions
+    revisions = tags + branches
+
+    # Sort the revisions based on the extracted number
+    sorted_revisions = sorted(revisions, key=extract_first_number)
+    
+    for revision in sorted_revisions:
+        revisions_final.append(revision.name)
+    
+    return revisions_final
+
 
 # %% Load checkpointed model state dicts
 # The steps for which there are checkpoints in the stanford crfm models
@@ -1433,8 +1466,8 @@ PYTHIA_CHECKPOINTS = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512] + list(
 # Pythia V1 has log-spaced early checkpoints (see line above), but V0 doesn't
 PYTHIA_V0_CHECKPOINTS = list(range(1000, 143000 + 1, 1000))
 
-OLMO_CHECKPOINTS_1B = list(range(1000, 738000+1, 1000)) 
-OLMO_CHECKPOINTS_7B = [5000] + list(range(40000, 558000+1, 1000))
+OLMO_CHECKPOINTS_1B = get_revisions("allenai/OLMo-1B-hf")
+OLMO_CHECKPOINTS_7B = get_revisions("allenai/OLMo-1.7-7B-hf") #somehow atm you can get the revisions for the 7B Model like that
 
 def get_checkpoint_labels(model_name: str, **kwargs):
     """Returns the checkpoint labels for a given model, and the label_type
@@ -1469,7 +1502,7 @@ def get_checkpoint_labels(model_name: str, **kwargs):
     
     elif official_model_name == "allenai/OLMo-1B-hf":
         return OLMO_CHECKPOINTS_1B, "step"
-    elif official_model_name == "allenai/OLMo-7B-hf":
+    elif official_model_name == "allenai/OLMo-1.7-7B-hf":
         return OLMO_CHECKPOINTS_7B, "step"
         
     
@@ -1557,9 +1590,9 @@ def get_pretrained_state_dict(
                     **kwargs,
                 )
             elif official_model_name.startswith("allenai/OLMo"):
-                hf_model = OLMoForCausalLM.from_pretrained(
+                hf_model = AutoModelForCausalLM.from_pretrained(
                     official_model_name,
-                    revision=f"step{cfg.checkpoint_value}-tokens4B",
+                    revision=f"{cfg.checkpoint_value}",
                     torch_dtype=dtype,
                     token=huggingface_token,
                     **kwargs,
@@ -3061,22 +3094,22 @@ def get_basic_config(model_name: str, **kwargs) -> Config:
 
 if __name__=="__main__":
     
-    #device: torch.device = utils.get_device()
+    device: torch.device = utils.get_device()
 
-    #model_name = "allenai/OLMo-1B-hf" #"meta-llama/Llama-2-7b-hf"  #"EleutherAI/pythia-14m"  # "facebook/opt-1.3b"
+    model_name =  "allenai/OLMo-1.7-7B-hf" #"allenai/OLMo-1B-hf" #"meta-llama/Llama-2-7b-hf"  #"EleutherAI/pythia-14m"  # "facebook/opt-1.3b"
     
-    #model = HookedTransformer.from_pretrained_no_processing(
-    #model_name,
-    #dtype=torch.bfloat16,
-    #center_unembed=True,
-    #center_writing_weights=True,
+    model = HookedTransformer.from_pretrained_no_processing(
+    model_name,
+    dtype=torch.bfloat16,
+    center_unembed=True,
+    center_writing_weights=True,
     #fold_ln=True,
-    #device = device,
-    #trust_remote_code=True,
-    #cache_dir = "/mounts/data/proj/hypersum"
-    #checkpoint_value = 5000
+    device = device,
+    trust_remote_code=True,
+    cache_dir = "/mounts/data/proj/hypersum",
+    checkpoint_value = 'step1000-tokens4B',
     #refactor_factored_attn_matrices=True,
-    #)
+    )
     
-    #model.generate("Angela Merkel is the capital of", max_new_tokens=1, temperature=0)
-    #print("test")
+    print(model.generate("Angela Merkel is the capital of", max_new_tokens=1, temperature=0))
+    print("test")
