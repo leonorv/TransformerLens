@@ -20,7 +20,7 @@ from transformers import (
     T5ForConditionalGeneration,
 )
 
-from hf_olmo import OLMoForCausalLM
+#from hf_olmo import OLMoForCausalLM
 from transformer_lens import ActivationCache, HookedTransformer
 
 
@@ -157,6 +157,7 @@ OFFICIAL_MODEL_NAMES = [
     "stabilityai/stablelm-tuned-alpha-3b",
     "stabilityai/stablelm-tuned-alpha-7b",
     "mistralai/Mistral-7B-v0.1",
+    "mistralai/Mistral-7B-v0.3",
     "mistralai/Mistral-7B-Instruct-v0.1",
     "mistralai/Mixtral-8x7B-v0.1",
     "mistralai/Mixtral-8x7B-Instruct-v0.1",
@@ -199,7 +200,7 @@ OFFICIAL_MODEL_NAMES = [
     "google-t5/t5-large",
     "ai-forever/mGPT",
     "allenai/OLMo-1B-hf",
-    "allenai/OLMo-1.7-7B-hf",
+    "allenai/OLMo-7B-0424-hf",
 ]
 """Official model names for models on HuggingFace."""
 
@@ -573,7 +574,8 @@ MODEL_ALIASES = {
         "stablelm-tuned-alpha-7b",
         "stablelm-tuned-7b",
     ],
-    "mistralai/Mistral-7B-v0.1": ["mistral-7b"],
+    #"mistralai/Mistral-7B-v0.1": ["mistral-7b"],
+    "mistralai/Mistral-7B-v0.3": ["mistral-7b"],
     "mistralai/Mistral-7B-Instruct-v0.1": ["mistral-7b-instruct"],
     "mistralai/Mixtral-8x7B-v0.1": ["mixtral", "mixtral-8x7b"],
     "mistralai/Mixtral-8x7B-Instruct-v0.1": [
@@ -618,7 +620,8 @@ MODEL_ALIASES = {
     "google-t5/t5-base": ["t5-base"],
     "google-t5/t5-large": ["t5-large"],
     "ai-forever/mGPT": ["mGPT"],
-    "allenai/OLMo-1.7-7B-hf": ["olmo-7b-hf"]
+    "allenai/OLMo-7B-0424-hf": ["OLMo-7B-0424-hf"],
+    "allenai/OLMo-1B-hf": ["OLMo-1B-hf"]
 }
 """Model aliases for models on HuggingFace."""
 
@@ -967,7 +970,7 @@ def convert_hf_model_config(model_name: str, **kwargs):
             "d_mlp": 14336,
             "n_layers": 32,
             "n_ctx": 2048,  # Capped due to memory issues
-            "d_vocab": 32000,
+            "d_vocab": hf_config.vocab_size,
             "act_fn": "silu",
             "normalization_type": "RMS",
             "positional_embedding_type": "rotary",
@@ -1230,8 +1233,8 @@ def convert_hf_model_config(model_name: str, **kwargs):
             "rotary_dim": hf_config.hidden_size //  hf_config.num_attention_heads,
             "d_mlp": hf_config.intermediate_size,
             "gated_mlp": True,
-            "tie_word_embeddings": hf_config.tie_word_embeddings
-            #'normalization_type': "LN"
+            "tie_word_embeddings": hf_config.tie_word_embeddings,
+            'normalization_type': "LN"
     }
     else:
         raise NotImplementedError(f"{architecture} is not currently supported.")
@@ -1467,7 +1470,7 @@ PYTHIA_CHECKPOINTS = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512] + list(
 PYTHIA_V0_CHECKPOINTS = list(range(1000, 143000 + 1, 1000))
 
 OLMO_CHECKPOINTS_1B = get_revisions("allenai/OLMo-1B-hf")
-OLMO_CHECKPOINTS_7B = get_revisions("allenai/OLMo-1.7-7B-hf") #somehow atm you can get the revisions for the 7B Model like that
+OLMO_CHECKPOINTS_7B = get_revisions("allenai/OLMo-7B-0424-hf") #somehow atm you can get the revisions for the 7B Model like that
 
 def get_checkpoint_labels(model_name: str, **kwargs):
     """Returns the checkpoint labels for a given model, and the label_type
@@ -1502,7 +1505,7 @@ def get_checkpoint_labels(model_name: str, **kwargs):
     
     elif official_model_name == "allenai/OLMo-1B-hf":
         return OLMO_CHECKPOINTS_1B, "step"
-    elif official_model_name == "allenai/OLMo-1.7-7B-hf":
+    elif official_model_name == "allenai/OLMo-7B-0424-hf":
         return OLMO_CHECKPOINTS_7B, "step"
         
     
@@ -3096,7 +3099,7 @@ if __name__=="__main__":
     
     device: torch.device = utils.get_device()
 
-    model_name =  "allenai/OLMo-1.7-7B-hf" #"allenai/OLMo-1B-hf" #"meta-llama/Llama-2-7b-hf"  #"EleutherAI/pythia-14m"  # "facebook/opt-1.3b"
+    model_name = "allenai/OLMo-7B-0424-hf" #"allenai/OLMo-1B-hf" #"meta-llama/Llama-2-7b-hf"  #"EleutherAI/pythia-14m"  # "facebook/opt-1.3b"
     
     model = HookedTransformer.from_pretrained_no_processing(
     model_name,
@@ -3104,10 +3107,11 @@ if __name__=="__main__":
     center_unembed=True,
     center_writing_weights=True,
     #fold_ln=True,
-    device = device,
+    device = "cuda:3",
+    #device_map="auto",
     trust_remote_code=True,
     cache_dir = "/mounts/data/proj/hypersum",
-    checkpoint_value = 'step1000-tokens4B',
+    #checkpoint_value = 'step1000-tokens4B',
     #refactor_factored_attn_matrices=True,
     )
     

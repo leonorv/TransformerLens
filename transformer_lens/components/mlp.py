@@ -55,7 +55,6 @@ class MLP(nn.Module):
                 self.ln = LayerNorm(self.cfg, self.cfg.d_mlp)
             else:
                 self.ln = LayerNormPre(self.cfg)
-
         else:
             raise ValueError(f"Invalid activation function name: {self.cfg.act_fn}")
 
