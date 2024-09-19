@@ -882,7 +882,7 @@ class ActivationCache:
         )
         if type(neuron_labels) == int:
             neuron_labels = np.array([neuron_labels])
-        for l in range(layer): # layer+1
+        for l in range(layer, layer+1): # layer+1
             # Note that this has shape batch x pos x head_index x d_model
             components.append(
                 self.get_neuron_results(l, pos_slice=pos_slice, neuron_slice=neuron_slice)
