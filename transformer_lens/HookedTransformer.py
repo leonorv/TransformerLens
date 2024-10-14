@@ -447,6 +447,7 @@ class HookedTransformer(HookedRootModule):
         attention_mask: Optional[torch.Tensor] = None,  # [batch pos]
         stop_at_layer: Optional[int] = None,
         past_kv_cache: Optional[HookedTransformerKeyValueCache] = None,
+        tmp_score: Optional[torch.Tensor] = None,
     ) -> Union[
         None,
         Float[torch.Tensor, "batch pos d_vocab"],
@@ -560,6 +561,15 @@ class HookedTransformer(HookedRootModule):
                     attention_mask=attention_mask,
                 )  # [batch, pos, d_model]
 
+            if tmp_score is not None:
+                logits = self.unembed(residual)
+
+                tgt_probs = torch.nn.functional.softmax(logits[:, -2, :], dim=1) # we get last token probs of the original prompts (without answer), shape [2, vocab_size]
+                diff = abs(tgt_probs[0, tokens[0, -1]] - tgt_probs[1, tokens[1, -1]])
+                
+                gradient = torch.autograd.grad(diff, tmp_score)
+                return logits, gradient[0]
+
             if stop_at_layer is not None:
                 # When we stop at an early layer, we end here rather than doing further computation
                 return residual
@@ -583,7 +593,7 @@ class HookedTransformer(HookedRootModule):
                         return Output(logits, loss)
                     else:
                         logging.warning(f"Invalid return_type passed in: {return_type}")
-                        return None
+                        return None 
 
     def loss_fn(
         self,
